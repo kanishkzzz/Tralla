@@ -1,0 +1,305 @@
+version: 1
+source: dispatcher_interview.txt
+description: >
+  Operating rules extracted from the knowledge-capture interview with
+  Rajender Pal Yadav, Senior Dispatch Manager, Meridian Freight.
+  Every rule carries a verbatim quote from the transcript, used as the
+  citation printed in work orders and audit records.
+
+rules:
+
+  # ---------------------------------------------------------------
+  # SAFETY AND COMPLIANCE  (priority 100 - hard exclusions)
+  # ---------------------------------------------------------------
+
+  - id: R-SERVICE-OVERDUE-30
+    name: Overdue service grounds the vehicle
+    step: select_vehicle
+    priority: 100
+    when:
+      vehicle_days_past_service: { gt: 30 }
+    then:
+      effect: exclude_vehicle
+      reason: Vehicle is more than 30 days past due service
+    quote: "any vehicle that is more than 30 days past its due service date is grounded"
+    implemented: true
+    notes: >
+      fleet_master.csv has no service_due_date column. Derived as
+      last maintenance date + 90 days. Assumption documented in DECISIONS.md.
+      One of the three rules the dispatcher named as non-negotiable.
+
+  - id: R-BS4-NCR-WINTER
+    name: No BS4 on Delhi NCR routes in winter
+    step: select_vehicle
+    priority: 100
+    when:
+      month_in: [10, 11, 12, 1, 2]
+      route_touches: [delhi, gurgaon, faridabad, noida]
+      vehicle_bs_stage: BS4
+    then:
+      effect: exclude_vehicle
+      reason: BS4 barred from NCR routes Oct-Feb under pollution restrictions
+    quote: "October to February, no BS4 vehicle goes on any Delhi NCR route"
+    implemented: true
+    notes: >
+      Overrides proximity. The dispatcher is explicit that a compliant
+      distant vehicle beats a non-compliant nearby one. Good demo case
+      for the rule-overrides-obvious-choice requirement.
+
+  - id: R-HILL-HEATER
+    name: Engine heater required on hill routes in winter
+    step: select_vehicle
+    priority: 100
+    when:
+      month_in: [11, 12, 1, 2]
+      route_is_hill: true
+      vehicle_has_heater: false
+    then:
+      effect: exclude_vehicle
+      reason: Cold-start risk on hill routes without an engine heater
+    quote: "The vehicle must have an engine heater"
+    implemented: true
+    notes: >
+      November to February, narrower than the NCR window which starts
+      in October. Hill routes are Rudrapur and onward toward Nainital.
+
+  - id: R-HILL-BRAKE-30
+    name: No recent brake work on hill routes
+    step: select_vehicle
+    priority: 100
+    when:
+      route_is_hill: true
+      vehicle_brake_work_days: { lt: 30 }
+    then:
+      effect: exclude_vehicle
+      reason: Brake work within 30 days; requires flat running before hill duty
+    quote: "I never send a vehicle on a hill route if it has had any brake work in the last thirty days"
+    implemented: true
+    notes: >
+      Applies year-round, not only in winter. Any brake work counts -
+      pad, drum, anything. Brake-work detection comes from maintenance
+      notes, including mixed Hindi-English entries.
+
+  - id: R-JUGAAD-7DAY
+    name: Temporary fix confines the vehicle for seven days
+    step: select_vehicle
+    priority: 100
+    when:
+      vehicle_has_active_jugaad: true
+    then:
+      effect: exclude_vehicle
+      reason: Vehicle on a temporary fix; confined to home region until permanent repair
+    quote: "every jugaad of his is a seven day clock"
+    implemented: true
+    notes: >
+      Transcript adds "until then that vehicle does not leave its home
+      region". Implemented as a full exclusion rather than a regional
+      restriction, because replacement dispatch is by definition
+      out-of-region work. Conservative direction, documented.
+
+  # ---------------------------------------------------------------
+  # DISPATCH SOURCING  (priority 90)
+  # ---------------------------------------------------------------
+
+  - id: R-ORIGIN-50KM
+    name: Within 50km, origin hub sends the replacement
+    step: select_vehicle
+    priority: 90
+    when:
+      km_from_origin: { lte: 50 }
+    then:
+      effect: set_source_hub
+      value: origin
+      reason: Breakdown within 50km of origin hub; nearest-hub vehicles reserved for premium dispatch
+    quote: "If a vehicle breaks down within 50 kilometers of its origin hub, the replacement comes from the origin hub"
+    implemented: true
+    notes: >
+      Overrides the obvious nearest-hub choice. The dispatcher's reason
+      is capacity reserve at small hubs, not distance. One of the three
+      rules he named as non-negotiable.
+
+  - id: R-ORIGIN-BEYOND-50KM
+    name: Beyond 50km, nearest eligible hub sends
+    step: select_vehicle
+    priority: 90
+    when:
+      km_from_origin: { gt: 50 }
+    then:
+      effect: set_source_hub
+      value: nearest
+      reason: Breakdown beyond 50km of origin hub; nearest hub with an eligible vehicle
+    quote: "Beyond 50 km, then yes, nearest hub with an eligible vehicle"
+    implemented: true
+
+  # ---------------------------------------------------------------
+  # CLIENT RULES  (priority 50)
+  # ---------------------------------------------------------------
+
+  - id: R-SHAKTI-36H
+    name: Shakti Cement is a 36-hour client
+    step: classify
+    priority: 50
+    when:
+      client_is: shakti_cement
+    then:
+      effect: set_sla_hours
+      value: 36
+      reason: Contractual 48h overridden by actual escalation threshold of 36h
+    quote: "if a Shakti load crosses 36 hours, their plant head calls our MD directly"
+    implemented: true
+    notes: >
+      One of the three rules he named as non-negotiable. The written
+      contract says 48h; the operative number is 36h.
+
+  - id: R-ORION-NEWEST
+    name: Orion Pharma requires a 2020-or-later vehicle
+    step: select_vehicle
+    priority: 50
+    when:
+      client_is: orion_pharma
+      vehicle_year: { lt: 2020 }
+    then:
+      effect: exclude_vehicle
+      reason: Orion pharma audit requires vehicles from 2020 or later; RC copy checked at gate
+    quote: "their consignments always get the newest available vehicle, 2020 or later"
+    implemented: true
+
+  - id: R-ORION-NO-OVERNIGHT
+    name: Orion loads never hold overnight at a hub
+    step: classify
+    priority: 50
+    when:
+      client_is: orion_pharma
+    then:
+      effect: message_constraint
+      value: >
+        Replacement must be dispatched without an overnight hub hold.
+        State the onward dispatch plan explicitly in the notification.
+      reason: Pharma cold-chain requirement; loads cannot wait unrefrigerated
+    quote: "their loads never wait at a hub overnight unrefrigerated"
+    implemented: true
+
+  - id: R-VERTEX-GATE-6PM
+    name: Vertex Ludhiana warehouse closes at 6pm
+    step: draft_message
+    priority: 50
+    when:
+      client_is: vertex_retail
+      dest_hub: ludhiana
+    then:
+      effect: message_constraint
+      value: >
+        If arrival would fall after 18:00, hold at the last halt and
+        deliver at 08:00 the following morning. Inform the Vertex
+        coordinator the previous evening.
+      reason: Ludhiana warehouse gate does not open after 18:00
+    quote: "their warehouse at Ludhiana stops accepting after 6 pm"
+    implemented: true
+
+  - id: R-VERTEX-NOT-FAILED
+    name: A held Vertex delivery is never recorded as failed
+    step: draft_message
+    priority: 50
+    when:
+      client_is: vertex_retail
+    then:
+      effect: message_constraint
+      value: >
+        Never describe a held or rescheduled delivery as failed or as an
+        attempted delivery. Use the phrase "scheduled morning delivery".
+      reason: The word "failed" auto-generates a penalty note in the Vertex system
+    quote: "it is never marked as a failed delivery. It is a scheduled morning delivery"
+    implemented: true
+    notes: >
+      Corroborated by email thread thread_10 (Vertex logistics to Meridian
+      ops, 04-05 Jun 2026), where exactly this exchange occurs for vehicle
+      HR15HP2193. Structured trip status and client expectation disagree;
+      client expectation wins for message wording.
+
+  - id: R-APEX-ROTATE
+    name: Rotate vehicles after any incident on an Apex run
+    step: select_vehicle
+    priority: 50
+    when:
+      client_is: apex_chemicals
+      vehicle_last_client_incident: apex_chemicals
+    then:
+      effect: exclude_vehicle
+      reason: Vehicle had an incident on the previous Apex dispatch; rotate at least one dispatch
+    quote: "that same truck does not go back to Apex on the very next dispatch"
+    implemented: false
+    notes: >
+      DEFERRED. Requires a per-client dispatch sequence to know what the
+      "very next dispatch" was. Would be built from the trips table
+      ordered by created_at, joined against ticket history per vehicle.
+      Cut for time; the rule is encoded here but not enforced by the
+      pipeline, and no decision cites it.
+
+  # ---------------------------------------------------------------
+  # SCHEDULING AND STAFFING  (priority 10)
+  # ---------------------------------------------------------------
+
+  - id: R-MONSOON-EAST-20
+    name: Pad ETAs by 20 percent east of Lucknow in monsoon
+    step: classify
+    priority: 10
+    when:
+      month_in: [7, 8, 9]
+      route_east_of_lucknow: true
+    then:
+      effect: adjust_eta_pct
+      value: 20
+      reason: Monsoon waterlogging and diversions east of Lucknow; quote the padded ETA upfront
+    quote: "July to September, anything going east of Lucknow, add twenty percent to whatever time the computer says"
+    implemented: true
+    notes: >
+      Twenty percent is a stated minimum, not a target. The padded number
+      is quoted to the client upfront rather than the standard SLA.
+
+  - id: R-NEWDRIVER-NIGHT
+    name: New drivers never run solo at night
+    step: assign_driver
+    priority: 10
+    when:
+      driver_months_tenure: { lt: 6 }
+      is_night_dispatch: true
+    then:
+      effect: exclude_driver
+      reason: Driver under six months tenure cannot run solo at night; pair or move to a day dispatch
+    quote: "New drivers, less than six months with us, never go solo on a night run"
+    implemented: true
+    notes: >
+      Night dispatch defined as 20:00-06:00 by ticket created_at.
+      Assumption documented in DECISIONS.md - the transcript does not
+      define the night window numerically.
+
+# ------------------------------------------------------------------
+# CONTEXT KEY CONTRACT
+# enrich.js must produce every key below. A rule whose key is missing
+# from the context must NOT match, and must write an audit line saying
+# the rule could not be evaluated. Missing data never counts as pass.
+#
+#   ticket-level:
+#     month                    integer 1-12, from ticket created_at
+#     client_is                normalised client slug
+#     km_from_origin           number, from ticket km_from_origin_hub
+#     route_touches            array of normalised hub slugs
+#     route_is_hill            boolean, true if route touches rudrapur/nainital
+#     route_east_of_lucknow    boolean
+#     dest_hub                 normalised destination hub slug
+#     is_night_dispatch        boolean, created_at between 20:00 and 06:00
+#     driver_months_tenure     number, from drivers.joining_date
+#
+#   vehicle-level (merged per candidate in the selection loop):
+#     vehicle_bs_stage         'BS4' | 'BS6'
+#     vehicle_year             integer
+#     vehicle_has_heater       boolean
+#     vehicle_days_past_service       number, derived - see R-SERVICE-OVERDUE-30
+#     vehicle_brake_work_days         number, days since last brake work
+#     vehicle_has_active_jugaad       boolean, 7-day window
+#     vehicle_last_client_incident    NOT IMPLEMENTED - see R-APEX-ROTATE
+#
+#   effects understood by rules.js:
+#     exclude_vehicle, exclude_driver, set_source_hub,
+#     set_sla_hours, adjust_eta_pct, message_constraint
+# ------------------------------------------------------------------
