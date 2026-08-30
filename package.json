@@ -5,6 +5,12 @@
   "type": "module",
   "scripts": {
     "init-db": "node scripts/init-db.js",
+    "ingest": "node scripts/ingest.js",
+    "run": "node scripts/run.js",
+    "verify": "node scripts/verify.js",
+    "approve": "node scripts/approve.js",
+    "ask": "node scripts/ask.js",
+    "setup": "node scripts/ingest.js && node scripts/run.js",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
@@ -14,7 +20,8 @@
     "better-sqlite3": "^13.0.3",
     "next": "16.3.3",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
