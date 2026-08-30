@@ -47,5 +47,5 @@ meridian.db-wal
 
 # Outputs
 /outputs
-/audits
+/audit
 

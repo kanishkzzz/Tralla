@@ -5,6 +5,12 @@
   "type": "module",
   "scripts": {
     "init-db": "node scripts/init-db.js",
+    "ingest": "node scripts/ingest.js",
+    "run": "node scripts/run.js",
+    "verify": "node scripts/verify.js",
+    "approve": "node scripts/approve.js",
+    "ask": "node scripts/ask.js",
+    "setup": "node scripts/ingest.js && node scripts/run.js",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

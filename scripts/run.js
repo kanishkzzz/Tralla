@@ -35,6 +35,7 @@ import {
   getDriver,
   getMaintenanceFor,
   getVehiclesByHub,
+  getVehicleCount,
   createWorkOrder,
   queueComms,
   quarantineRecord,
@@ -42,6 +43,7 @@ import {
   withTransaction,
 } from '../lib/db.js';
 
+import { adaptQueue } from '../lib/adapt.js';
 import { validateTicket } from '../lib/pipeline/validate.js';
 import { enrich } from '../lib/pipeline/enrich.js';
 import { classify } from '../lib/pipeline/classify.js';
@@ -68,11 +70,10 @@ function idFor(prefix, ticketId) {
 // Queue loading
 // ---------------------------------------------------------------------
 
-// SEAM: lib/adapt.js replaces the body of this function in step 5. Today it
-// understands one shape - a JSON array. The hour-7 file will not be that
-// shape, and the job of adapt.js is to recognise the common variants
-// (NDJSON, { tickets: [...] }, renamed keys) and to REJECT cleanly rather
-// than half-read anything it does not recognise.
+// Reading is ours; understanding the shape is adapt.js's. It recognises a
+// JSON array, a wrapped array, NDJSON and renamed keys, and refuses cleanly
+// on anything else rather than half-reading it into records that look valid
+// and are not.
 function loadQueue(queuePath) {
   let text;
   try {
@@ -80,19 +81,7 @@ function loadQueue(queuePath) {
   } catch (err) {
     return { records: [], fatal: `unreadable_queue_file: ${err.code || 'ERROR'}` };
   }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return { records: [], fatal: 'queue_file_not_valid_json' };
-  }
-
-  if (!Array.isArray(parsed)) {
-    return { records: [], fatal: 'queue_file_not_an_array' };
-  }
-
-  return { records: parsed, fatal: null };
+  return adaptQueue(text, queuePath);
 }
 
 // ---------------------------------------------------------------------
@@ -230,6 +219,9 @@ function processTicket(raw, sourceFile) {
       classification: classified.result,
       selection: selected.result,
       source_hub: source.hub,
+      // The whole sourcing verdict, not just the chosen hub, so the work
+      // order can cite R-ORIGIN-50KM and the dispatcher's words for it.
+      sourcing: source,
     });
     const woWrite = createWorkOrder(wo);
 
@@ -292,8 +284,37 @@ function processTicket(raw, sourceFile) {
 // ---------------------------------------------------------------------
 
 function main() {
+  // Refuse to run against an empty context store.
+  //
+  // Without this, running before scripts/ingest.js quarantines every ticket
+  // as vehicle_not_in_fleet - and because quarantine is keyed
+  // (ticket_key, reason) with INSERT OR IGNORE, those rows are PERMANENT.
+  // A later correct run cannot overwrite them, resetContextTables() cannot
+  // clear them, and the audit trail ends up holding both "quarantined: no
+  // fleet vehicle" and "work_order: created" for the same ticket. A
+  // contradictory trail is worse than no trail.
+  //
+  // So this is a hard stop rather than a warning: there is no legitimate
+  // run against an empty fleet, and the only recovery from the poisoned
+  // state is deleting the database.
+  //
+  // Note it only checks vehicles, because that is the only count db.js
+  // exposes. An empty maintenance table would be worse in a quieter way -
+  // every brake and service rule would silently pass - so if you want that
+  // covered too, db.js needs a getMaintenanceCount() and this needs a
+  // second clause.
+  if (getVehicleCount() === 0) {
+    process.stderr.write(
+      'ALERT context_store_empty: no vehicles in the context store. ' +
+      'Run `node scripts/ingest.js` first. Refusing to process the queue, ' +
+      'because every ticket would quarantine and the quarantine rows would be permanent.\n'
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const queuePath = process.argv[2] || DEFAULT_QUEUE;
-  const { records, fatal } = loadQueue(queuePath);
+  const { records, fatal, shape, renamed, unusable } = loadQueue(queuePath);
 
   if (fatal) {
     // Degrade safely and loudly. An unreadable queue is not an empty queue,
@@ -303,6 +324,21 @@ function main() {
     process.stderr.write(`ALERT queue_unusable ${queuePath}: ${fatal}\n`);
     process.exitCode = 1;
     return;
+  }
+
+  // A format change is news, not an implementation detail. It goes to
+  // stderr as an alert so an unattended run surfaces it, and into the run
+  // summary so the evaluator can see what we recognised.
+  if (renamed && renamed.length > 0) {
+    process.stderr.write(
+      `ALERT queue_format_changed ${queuePath}: shape=${shape}, ` +
+      `fields arrived under different names: ${renamed.join(', ')}
+`
+    );
+  }
+  if (unusable > 0) {
+    process.stderr.write(`ALERT queue_unusable_records ${queuePath}: ${unusable} entries were not objects
+`);
   }
 
   const seen = new Set();
@@ -361,7 +397,8 @@ function main() {
   const written = renderAll();
 
   process.stdout.write(
-    `queue=${queuePath} records=${summary.total} processed=${summary.processed} ` +
+    `queue=${queuePath} shape=${shape}${renamed && renamed.length ? ` renamed=[${renamed.join('|')}]` : ''} ` +
+    `records=${summary.total} processed=${summary.processed} ` +
     `replayed=${summary.replayed} duplicates=${summary.duplicates} ` +
     `quarantined=${summary.quarantined}\n`
   );
